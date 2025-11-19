@@ -15,7 +15,38 @@ import { Label } from "@/components/ui/label";
 import { Popover } from "@/components/ui/popover";
 import { api, type Session } from "@/lib/api";
 import { cn } from "@/lib/utils";
-import { listen, type UnlistenFn } from "@tauri-apps/api/event";
+
+// Conditional imports for Tauri APIs
+let tauriListen: any;
+type UnlistenFn = () => void;
+
+try {
+  if (typeof window !== 'undefined' && window.__TAURI__) {
+    tauriListen = require("@tauri-apps/api/event").listen;
+  }
+} catch (e) {
+  console.log('[ClaudeCodeSession] Tauri APIs not available, using web mode');
+}
+
+// Web-compatible replacements
+const listen = tauriListen || ((eventName: string, callback: (event: any) => void) => {
+  console.log('[ClaudeCodeSession] Setting up DOM event listener for:', eventName);
+
+  // In web mode, listen for DOM events
+  const domEventHandler = (event: any) => {
+    console.log('[ClaudeCodeSession] DOM event received:', eventName, event.detail);
+    // Simulate Tauri event structure
+    callback({ payload: event.detail });
+  };
+
+  window.addEventListener(eventName, domEventHandler);
+
+  // Return unlisten function
+  return Promise.resolve(() => {
+    console.log('[ClaudeCodeSession] Removing DOM event listener for:', eventName);
+    window.removeEventListener(eventName, domEventHandler);
+  });
+});
 import { StreamMessage } from "./StreamMessage";
 import { FloatingPromptInput, type FloatingPromptInputRef } from "./FloatingPromptInput";
 import { ErrorBoundary } from "./ErrorBoundary";
@@ -105,7 +136,7 @@ export const ClaudeCodeSession: React.FC<ClaudeCodeSessionProps> = ({
   
   // Add collapsed state for queued prompts
   const [queuedPromptsCollapsed, setQueuedPromptsCollapsed] = useState(false);
-  
+
   const parentRef = useRef<HTMLDivElement>(null);
   const unlistenRefs = useRef<UnlistenFn[]>([]);
   const hasActiveSessionRef = useRef(false);
@@ -114,6 +145,7 @@ export const ClaudeCodeSession: React.FC<ClaudeCodeSessionProps> = ({
   const isMountedRef = useRef(true);
   const isListeningRef = useRef(false);
   const sessionStartTime = useRef<number>(Date.now());
+  const isIMEComposingRef = useRef(false);
   
   // Session metrics state for enhanced analytics
   const sessionMetrics = useRef({
@@ -274,7 +306,22 @@ export const ClaudeCodeSession: React.FC<ClaudeCodeSessionProps> = ({
   // Auto-scroll to bottom when new messages arrive
   useEffect(() => {
     if (displayableMessages.length > 0) {
-      rowVirtualizer.scrollToIndex(displayableMessages.length - 1, { align: 'end', behavior: 'smooth' });
+      // Use a more precise scrolling method to ensure content is fully visible
+      setTimeout(() => {
+        const scrollElement = parentRef.current;
+        if (scrollElement) {
+          // First, scroll using virtualizer to get close to the bottom
+          rowVirtualizer.scrollToIndex(displayableMessages.length - 1, { align: 'end', behavior: 'auto' });
+
+          // Then use direct scroll to ensure we reach the absolute bottom
+          requestAnimationFrame(() => {
+            scrollElement.scrollTo({
+              top: scrollElement.scrollHeight,
+              behavior: 'smooth'
+            });
+          });
+        }
+      }, 50);
     }
   }, [displayableMessages.length, rowVirtualizer]);
 
@@ -326,7 +373,17 @@ export const ClaudeCodeSession: React.FC<ClaudeCodeSessionProps> = ({
       // Scroll to bottom after loading history
       setTimeout(() => {
         if (loadedMessages.length > 0) {
-          rowVirtualizer.scrollToIndex(loadedMessages.length - 1, { align: 'end', behavior: 'auto' });
+          const scrollElement = parentRef.current;
+          if (scrollElement) {
+            // Use the same improved scrolling method
+            rowVirtualizer.scrollToIndex(loadedMessages.length - 1, { align: 'end', behavior: 'auto' });
+            requestAnimationFrame(() => {
+              scrollElement.scrollTo({
+                top: scrollElement.scrollHeight,
+                behavior: 'auto'
+              });
+            });
+          }
         }
       }, 100);
     } catch (err) {
@@ -387,7 +444,7 @@ export const ClaudeCodeSession: React.FC<ClaudeCodeSessionProps> = ({
     isListeningRef.current = true;
     
     // Set up session-specific listeners
-    const outputUnlisten = await listen<string>(`claude-output:${sessionId}`, async (event) => {
+    const outputUnlisten = await listen(`claude-output:${sessionId}`, async (event: any) => {
       try {
         console.log('[ClaudeCodeSession] Received claude-output on reconnect:', event.payload);
         
@@ -404,14 +461,14 @@ export const ClaudeCodeSession: React.FC<ClaudeCodeSessionProps> = ({
       }
     });
 
-    const errorUnlisten = await listen<string>(`claude-error:${sessionId}`, (event) => {
+    const errorUnlisten = await listen(`claude-error:${sessionId}`, (event: any) => {
       console.error("Claude error:", event.payload);
       if (isMountedRef.current) {
         setError(event.payload);
       }
     });
 
-    const completeUnlisten = await listen<boolean>(`claude-complete:${sessionId}`, async (event) => {
+    const completeUnlisten = await listen(`claude-complete:${sessionId}`, async (event: any) => {
       console.log('[ClaudeCodeSession] Received claude-complete on reconnect:', event.payload);
       if (isMountedRef.current) {
         setIsLoading(false);
@@ -489,16 +546,16 @@ export const ClaudeCodeSession: React.FC<ClaudeCodeSessionProps> = ({
         const attachSessionSpecificListeners = async (sid: string) => {
           console.log('[ClaudeCodeSession] Attaching session-specific listeners for', sid);
 
-          const specificOutputUnlisten = await listen<string>(`claude-output:${sid}`, (evt) => {
+          const specificOutputUnlisten = await listen(`claude-output:${sid}`, (evt: any) => {
             handleStreamMessage(evt.payload);
           });
 
-          const specificErrorUnlisten = await listen<string>(`claude-error:${sid}`, (evt) => {
+          const specificErrorUnlisten = await listen(`claude-error:${sid}`, (evt: any) => {
             console.error('Claude error (scoped):', evt.payload);
             setError(evt.payload);
           });
 
-          const specificCompleteUnlisten = await listen<boolean>(`claude-complete:${sid}`, (evt) => {
+          const specificCompleteUnlisten = await listen(`claude-complete:${sid}`, (evt: any) => {
             console.log('[ClaudeCodeSession] Received claude-complete (scoped):', evt.payload);
             processComplete(evt.payload);
           });
@@ -509,7 +566,7 @@ export const ClaudeCodeSession: React.FC<ClaudeCodeSessionProps> = ({
         };
 
         // Generic listeners (catch-all)
-        const genericOutputUnlisten = await listen<string>('claude-output', async (event) => {
+        const genericOutputUnlisten = await listen('claude-output', async (event: any) => {
           handleStreamMessage(event.payload);
 
           // Attempt to extract session_id on the fly (for the very first init)
@@ -544,17 +601,30 @@ export const ClaudeCodeSession: React.FC<ClaudeCodeSessionProps> = ({
           }
         });
 
-        // Helper to process any JSONL stream message string
-        function handleStreamMessage(payload: string) {
+        // Helper to process any JSONL stream message string or object
+        function handleStreamMessage(payload: string | ClaudeStreamMessage) {
           try {
             // Don't process if component unmounted
             if (!isMountedRef.current) return;
             
-            // Store raw JSONL
-            setRawJsonlOutput((prev) => [...prev, payload]);
-
-            const message = JSON.parse(payload) as ClaudeStreamMessage;
+            let message: ClaudeStreamMessage;
+            let rawPayload: string;
             
+            if (typeof payload === 'string') {
+              // Tauri mode: payload is a JSON string
+              rawPayload = payload;
+              message = JSON.parse(payload) as ClaudeStreamMessage;
+            } else {
+              // Web mode: payload is already parsed object
+              message = payload;
+              rawPayload = JSON.stringify(payload);
+            }
+            
+            console.log('[ClaudeCodeSession] handleStreamMessage - message type:', message.type);
+
+            // Store raw JSONL
+            setRawJsonlOutput((prev) => [...prev, rawPayload]);
+
             // Track enhanced tool execution
             if (message.type === 'assistant' && message.message?.content) {
               const toolUses = message.message.content.filter((c: any) => c.type === 'tool_use');
@@ -562,7 +632,7 @@ export const ClaudeCodeSession: React.FC<ClaudeCodeSessionProps> = ({
                 // Increment tools executed counter
                 sessionMetrics.current.toolsExecuted += 1;
                 sessionMetrics.current.lastActivityTime = Date.now();
-                
+
                 // Track file operations
                 const toolName = toolUse.name?.toLowerCase() || '';
                 if (toolName.includes('create') || toolName.includes('write')) {
@@ -572,12 +642,12 @@ export const ClaudeCodeSession: React.FC<ClaudeCodeSessionProps> = ({
                 } else if (toolName.includes('delete')) {
                   sessionMetrics.current.filesDeleted += 1;
                 }
-                
+
                 // Track tool start - we'll track completion when we get the result
                 workflowTracking.trackStep(toolUse.name);
               });
             }
-            
+
             // Track tool results
             if (message.type === 'user' && message.message?.content) {
               const toolResults = message.message.content.filter((c: any) => c.type === 'tool_result');
@@ -587,7 +657,7 @@ export const ClaudeCodeSession: React.FC<ClaudeCodeSessionProps> = ({
                 if (isError) {
                   sessionMetrics.current.toolsFailed += 1;
                   sessionMetrics.current.errorsEncountered += 1;
-                  
+
                   trackEvent.enhancedError({
                     error_type: 'tool_execution',
                     error_code: 'tool_failed',
@@ -602,10 +672,10 @@ export const ClaudeCodeSession: React.FC<ClaudeCodeSessionProps> = ({
                 }
               });
             }
-            
+
             // Track code blocks generated
             if (message.type === 'assistant' && message.message?.content) {
-              const codeBlocks = message.message.content.filter((c: any) => 
+              const codeBlocks = message.message.content.filter((c: any) =>
                 c.type === 'text' && c.text?.includes('```')
               );
               if (codeBlocks.length > 0) {
@@ -616,12 +686,12 @@ export const ClaudeCodeSession: React.FC<ClaudeCodeSessionProps> = ({
                 });
               }
             }
-            
+
             // Track errors in system messages
             if (message.type === 'system' && (message.subtype === 'error' || message.error)) {
               sessionMetrics.current.errorsEncountered += 1;
             }
-            
+
             setMessages((prev) => [...prev, message]);
           } catch (err) {
             console.error('Failed to parse message:', err, payload);
@@ -727,12 +797,12 @@ export const ClaudeCodeSession: React.FC<ClaudeCodeSessionProps> = ({
           }
         };
 
-        const genericErrorUnlisten = await listen<string>('claude-error', (evt) => {
+        const genericErrorUnlisten = await listen('claude-error', (evt: any) => {
           console.error('Claude error:', evt.payload);
           setError(evt.payload);
         });
 
-        const genericCompleteUnlisten = await listen<boolean>('claude-complete', (evt) => {
+        const genericCompleteUnlisten = await listen('claude-complete', (evt: any) => {
           console.log('[ClaudeCodeSession] Received claude-complete (generic):', evt.payload);
           processComplete(evt.payload);
         });
@@ -1026,6 +1096,16 @@ export const ClaudeCodeSession: React.FC<ClaudeCodeSessionProps> = ({
     setShowForkDialog(true);
   };
 
+  const handleCompositionStart = () => {
+    isIMEComposingRef.current = true;
+  };
+
+  const handleCompositionEnd = () => {
+    setTimeout(() => {
+      isIMEComposingRef.current = false;
+    }, 0);
+  };
+
   const handleConfirmFork = async () => {
     if (!forkCheckpointId || !forkSessionName.trim() || !effectiveSession) return;
     
@@ -1141,7 +1221,7 @@ export const ClaudeCodeSession: React.FC<ClaudeCodeSessionProps> = ({
   const messagesList = (
     <div
       ref={parentRef}
-      className="flex-1 overflow-y-auto relative pb-40"
+      className="flex-1 overflow-y-auto relative pb-20"
       style={{
         contain: 'strict',
       }}
@@ -1187,7 +1267,7 @@ export const ClaudeCodeSession: React.FC<ClaudeCodeSessionProps> = ({
           initial={{ opacity: 0, y: 8 }}
           animate={{ opacity: 1, y: 0 }}
           transition={{ duration: 0.15 }}
-          className="flex items-center justify-center py-4 mb-40"
+          className="flex items-center justify-center py-4 mb-20"
         >
           <div className="rotating-symbol text-primary" />
         </motion.div>
@@ -1199,7 +1279,7 @@ export const ClaudeCodeSession: React.FC<ClaudeCodeSessionProps> = ({
           initial={{ opacity: 0, y: 8 }}
           animate={{ opacity: 1, y: 0 }}
           transition={{ duration: 0.15 }}
-          className="rounded-lg border border-destructive/50 bg-destructive/10 p-4 text-sm text-destructive mb-40 w-full max-w-6xl mx-auto"
+          className="rounded-lg border border-destructive/50 bg-destructive/10 p-4 text-sm text-destructive mb-20 w-full max-w-6xl mx-auto"
         >
           {error}
         </motion.div>
@@ -1409,18 +1489,23 @@ export const ClaudeCodeSession: React.FC<ClaudeCodeSessionProps> = ({
                       variant="ghost"
                       size="sm"
                       onClick={() => {
-                      // Use virtualizer to scroll to the last item
-                      if (displayableMessages.length > 0) {
-                        // Scroll to bottom of the container
-                        const scrollElement = parentRef.current;
-                        if (scrollElement) {
-                          scrollElement.scrollTo({
-                            top: scrollElement.scrollHeight,
-                            behavior: 'smooth'
-                          });
+                        // Use the improved scrolling method for manual scroll to bottom
+                        if (displayableMessages.length > 0) {
+                          const scrollElement = parentRef.current;
+                          if (scrollElement) {
+                            // First, scroll using virtualizer to get close to the bottom
+                            rowVirtualizer.scrollToIndex(displayableMessages.length - 1, { align: 'end', behavior: 'auto' });
+
+                            // Then use direct scroll to ensure we reach the absolute bottom
+                            requestAnimationFrame(() => {
+                              scrollElement.scrollTo({
+                                top: scrollElement.scrollHeight,
+                                behavior: 'smooth'
+                              });
+                            });
+                          }
                         }
-                      }
-                    }}
+                      }}
                       className="px-3 py-2 hover:bg-accent rounded-none"
                     >
                       <ChevronDown className="h-4 w-4" />
@@ -1609,11 +1694,16 @@ export const ClaudeCodeSession: React.FC<ClaudeCodeSessionProps> = ({
                 placeholder="e.g., Alternative approach"
                 value={forkSessionName}
                 onChange={(e) => setForkSessionName(e.target.value)}
-                onKeyPress={(e) => {
+                onKeyDown={(e) => {
                   if (e.key === "Enter" && !isLoading) {
+                    if (e.nativeEvent.isComposing || isIMEComposingRef.current) {
+                      return;
+                    }
                     handleConfirmFork();
                   }
                 }}
+                onCompositionStart={handleCompositionStart}
+                onCompositionEnd={handleCompositionEnd}
               />
             </div>
           </div>
