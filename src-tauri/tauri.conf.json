@@ -61,7 +61,9 @@
       "rpm",
       "appimage",
       "app",
-      "dmg"
+      "dmg",
+      "msi",
+      "nsis"
     ],
     "icon": [
       "icons/32x32.png",
@@ -97,6 +99,18 @@
         "windowSize": { "width": 540, "height": 380 },
         "appPosition": { "x": 140, "y": 200 },
         "applicationFolderPosition": { "x": 400, "y": 200 }
+      }
+    },
+    "windows": {
+      "certificateThumbprint": null,
+      "digestAlgorithm": "sha256",
+      "timestampUrl": "",
+      "wix": {
+        "language": ["en-US"],
+        "template": "main.wxs"
+      },
+      "nsis": {
+        "displayLanguageSelector": true
       }
     }
   }
