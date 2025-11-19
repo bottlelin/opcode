@@ -72,6 +72,10 @@ window-vibrancy = "0.5"
 cocoa = "0.26"
 objc = "0.2"
 
+[target.'cfg(target_os = "windows")'.dependencies]
+winapi = { version = "0.3", features = ["winuser", "winreg", "fileapi", "handleapi", "processthreadsapi"] }
+windows = { version = "0.58", features = ["Win32_UI_Shell", "Win32_Foundation", "Win32_System_Registry"] }
+
 [features]
 # This feature is used for production builds or when a dev server is not specified, DO NOT REMOVE!!
 custom-protocol = ["tauri/custom-protocol"]
